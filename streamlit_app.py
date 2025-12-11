@@ -327,51 +327,18 @@ def render_meeting_profile(meeting):
         st.markdown("<div class='title'> Follow-Up Plan</div>", unsafe_allow_html=True)
 
         for key, item in sorted(followups.items()):
-            st.markdown(f"###  {item.get('subject', 'Follow-up Email')}")
+            st.markdown(f"###  {item.get('subject','Follow-up Email')}")
             st.markdown(item.get("body", ""))
 
             attachments = item.get("attachments", [])
-
-            # Normalize attachments to always be list of dicts
-            normalized_attachments = []
-
-            if isinstance(attachments, list):
-                for att in attachments:
-                    if isinstance(att, dict):
-                        normalized_attachments.append({
-                            "name": att.get("name", "file.pdf"),
-                            "description": att.get("description", "")
-                        })
-                    else:
-                        # If model returned a simple string
-                        normalized_attachments.append({
-                            "name": str(att),
-                            "description": ""
-                        })
-
-            elif isinstance(attachments, dict):
-                # Single dict only
-                normalized_attachments.append({
-                    "name": attachments.get("name", "file.pdf"),
-                    "description": attachments.get("description", "")
-                })
-
-            elif isinstance(attachments, str):
-                # Pure string
-                normalized_attachments.append({
-                    "name": attachments,
-                    "description": ""
-                })
-
-            # Display normalized attachments
-            if normalized_attachments:
+            if attachments:
                 st.markdown("#### 📎 Attachments")
-
-                for att in normalized_attachments:
+                for att in attachments:
                     st.markdown(f"""
-                        <div style='padding:10px;border:1px solid #ddd;border-radius:10px;margin-bottom:10px;background:#f9faff'>
-                            <b>📄 {att["name"]}</b><br>
-                            <small>{att["description"]}</small>
+                        <div style='padding:12px;border-radius:12px;background:#f0f6ff;
+                        border:1px solid #cbd5e1;margin-bottom:12px;'>
+                            <b>📄 {att.get('name','file.pdf')}</b><br>
+                            <small>{att.get('description','')}</small>
                         </div>
                     """, unsafe_allow_html=True)
 
@@ -603,7 +570,7 @@ with tab_analysis:
 # 📝 ANALYZE NEW MEETING — Full Page
 # ==========================================================
     st.markdown("""
-        <h2 style='text-align:center; margin-bottom:12px;'> Analyze New Meeting</h2>
+        <h2 style='text-align:center; margin-bottom:12px;'>📝 Analyze New Meeting</h2>
         <p style='text-align:center; color:gray;'>
             Run the AI pipeline to understand customer needs, objections, and opportunities in seconds
         </p>
