@@ -1,0 +1,241 @@
+import os
+import json
+import re
+from difflib import SequenceMatcher
+from groq import Groq
+from dotenv import load_dotenv
+
+
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+client = Groq(api_key=GROQ_API_KEY)
+
+SECTOR_ENGINE = r"E:\Rag\Sector_Engine"
+CACHED_JSON = r"E:\Rag\Marketing_cached_data.json"
+
+
+# clean text   before the matching  
+def clean_text(txt):
+    txt = txt.replace("\n", " ").replace("\r", " ")
+    txt = re.sub(r"\s+", " ", txt)
+    return txt.strip()
+
+
+# load  the  cashed  data
+def load_cached_rag():
+    if os.path.exists(CACHED_JSON):
+        with open(CACHED_JSON, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+# LOCAL FUZZY MATCHING (NO large text to LLaMA)
+# to  avoid  feed much  tokens  to  lllam
+# based  on  score of  matching 
+def fuzzy_score(a, b):
+    """Similarity score 0–1"""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+# note  the pdf  max 200 char 
+#  to  less the load of  content 
+def match_pdfs_to_topics(topics, cached_pdfs):
+    """
+    topics: list of extracted topics or keywords
+    cached_pdfs: dict {pdf_name: content_string}
+    """
+    scores = []
+
+    for pdf_name, pdf_text in cached_pdfs.items():
+        clean = clean_text(pdf_text[:2000])   
+        score_sum = 0
+
+        for t in topics:
+            score_sum += fuzzy_score(t, clean) * 100
+
+        avg_score = score_sum / len(topics)
+        scores.append((pdf_name, avg_score))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores[:2]  # top 2 PDFs
+
+
+
+# LOCAL AUTO-SUMARY (NO AI NEEDED)
+
+def summarize_local(text):
+    """
+    Short simple summary (no tokens, no AI)
+    """
+    text = clean_text(text)
+    words = text.split(" ")
+    short = " ".join(words[:40])  # first 40 words
+    return short + "..."
+
+
+
+
+
+
+
+def analyze_meeting_text(meeting_text):
+    SYSTEM = """
+أنت متخصص في تحليل نصوص الاجتماعات. أعطني فقط JSON منظم.
+يجب أن يحتوي على:
+topics: قائمة بأهم 3 مواضيع ذكرت
+fears: أهم مخاوف العميل
+objection: أهم اعتراض
+summary: ملخص قصير للاجتماع
+
+
+- clarity
+- need_understanding
+- professionalism
+- objection_handling
+- rapport
+- closing_power
+ مع  زكر  السبب من الميتسنج او ردود السيلز اللي خلاه ياخد التقييم ده
+ 
+ 
+"""
+
+    USER = f"هذا نص الاجتماع:\n{meeting_text}\n\nاستخرج JSON فقط."
+
+    result = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": USER}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=500
+    )
+
+    return json.loads(result.choices[0].message.content)
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+#################################################################################
+
+
+
+# ---------------------------------------------
+# FOLLOW-UP GENERATOR (NOW SMALL + SAFE)
+# ---------------------------------------------
+def generate_followup_plan(analysis, matched_pdfs):
+    topics = analysis["topics"]
+    fears = analysis["fears"]
+    objection = analysis["objection"]
+    meeting_summary = analysis["summary"]
+
+    pdf_summaries = []
+    for pdf_name, pdf_desc in matched_pdfs:
+        pdf_summaries.append(
+            f"{pdf_name}: {pdf_desc}"
+        )
+
+    pdf_text_block = "\n".join(pdf_summaries)
+
+    SYSTEM = """
+أنت خبير مبيعات. اكتب خطة Follow-up من 4 رسائل فقط.
+- الرسالة 1: للموضوع الأساسي
+- الرسالة 2: للموضوع الثانوي
+- الرسالة 3: لتعالج الخوف أو الاعتراض
+- الرسالة 4: رسالة ختامية بدون ضغط على العميل
+
+اكتب فقط JSON.
+
+
+"""
+
+    USER = f"""
+ملخص الاجتماع: {meeting_summary}
+
+المواضيع: {topics}
+الاعتراض: {objection}
+المخاوف: {fears}
+
+الملفات المتاحة:
+{pdf_text_block}
+
+-with explain small breif about the attached pdf  and how it will help  to solve the problem for you 
+اكتب لي JSON فيه followup_1, followup_2, followup_3, followup_4.
+
+
+based on the dialog  that happened with cliet  and solving his probllems 
+and show the examples you based the scoring on it
+
+- highlight any  rong chat  or action happen between the sales and client  to  make the sales to avoid i thenext call
+- highlight if he miss any important thing or service  may cover also in next call 
+_ we need to  protect the sales from his mistackews appear in the meeting  
+we need to return it and highlit it  to see what is hos rong 
+sales scoring  (- clarity
+- need_understanding
+- professionalism
+- objection_handling
+- rapport
+- closing_power)
+
+"""
+
+    result = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": USER}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=800
+    )
+
+    return json.loads(result.choices[0].message.content)
+
+
+# PIPELINE
+#cycle-> analysing the meeeting  --< laodcashed    --->fuzzy matchpdf --> prepare summary --->
+#--> return  follow up 
+
+def run_pipeline(meeting_text):
+
+    analysis = analyze_meeting_text(meeting_text)
+
+    cached_pdfs = load_cached_rag()
+
+    topics = analysis["topics"]
+    scored = match_pdfs_to_topics(topics, cached_pdfs)
+
+    # Prepare summaries
+    final_pdf_list = []
+    for pdf, score in scored:
+        desc = summarize_local(cached_pdfs[pdf])
+        final_pdf_list.append((pdf, desc))
+
+    # Build follow-up plan safely nbased on analysis, pdf matching 
+    followup = generate_followup_plan(analysis, final_pdf_list)
+
+    return analysis, final_pdf_list, followup
+
+
+if __name__ == "__main__":
+    meeting = open("meeting.txt", "r", encoding="utf-8").read()
+
+    analysis, matched, followup = run_pipeline(meeting)
+
+    print("\n=== ANALYSIS ===")
+    print(json.dumps(analysis, ensure_ascii=False, indent=2))
+
+    print("\n=== MATCHED PDFs ===")
+    print(matched)
+
+    print("\n=== FOLLOW-UP PLAN ===")
+    print(json.dumps(followup, ensure_ascii=False, indent=2))   
